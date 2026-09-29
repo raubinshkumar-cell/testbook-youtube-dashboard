@@ -1,3 +1,1 @@
-# Testbook YouTube Command Center
-29-channel Streamlit dashboard. Add `YOUTUBE_API_KEY = "YOUR_KEY"` to Streamlit Secrets.
-Features: ranking, search, sorting, auto-refresh, growth since previous fetch, charts and CSV export.
+Testbook YouTube Command Center V4 — persistent Google Sheets history with 7/30/90 day analytics.

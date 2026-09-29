@@ -1,35 +1,41 @@
 import streamlit as st
 import pandas as pd, requests, re, time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Testbook YouTube Command Center", page_icon="📊", layout="wide")
 st.title("📊 Testbook YouTube Command Center")
-st.caption("29-channel subscriber monitoring • YouTube Data API v3")
+st.caption("29-channel subscriber monitoring • YouTube Data API v3 • Persistent Google Sheets history")
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GS_OK=True
+except Exception:
+    GS_OK=False
 
 def ident(url):
-    for pattern, key, prefix in [
-        (r"youtube\.com/channel/([A-Za-z0-9_-]+)","id",""),
-        (r"youtube\.com/@([^/?]+)","forHandle","@"),
-        (r"youtube\.com/user/([^/?]+)","forUsername","")]:
-        m=re.search(pattern,str(url))
-        if m: return key,prefix+m.group(1)
+    for p,k,pre in [(r"youtube\.com/channel/([A-Za-z0-9_-]+)","id",""),
+                    (r"youtube\.com/@([^/?]+)","forHandle","@"),
+                    (r"youtube\.com/user/([^/?]+)","forUsername","")]:
+        m=re.search(p,str(url))
+        if m:return k,pre+m.group(1)
     return None,None
 
-def fetch(api, rows):
+def fetch(api,rows):
     out=[]; errors=[]; now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for name,url in rows:
-        key,val=ident(url)
-        if not key: errors.append((name,"Invalid URL")); continue
+        k,v=ident(url)
+        if not k: errors.append((name,"Invalid YouTube URL")); continue
         try:
             r=requests.get("https://www.googleapis.com/youtube/v3/channels",
-                params={"part":"snippet,statistics","key":api,key:val},timeout=15)
+                params={"part":"snippet,statistics","key":api,k:v},timeout=15)
             p=r.json()
             if r.status_code!=200 or not p.get("items"):
                 errors.append((name,p.get("error",{}).get("message",f"HTTP {r.status_code}"))); continue
-            s=p["items"][0].get("statistics",{})
+            s=p["items"][0]["statistics"]
             out.append({"Channel":name,"Subscribers":None if s.get("hiddenSubscriberCount") else int(s.get("subscriberCount",0)),
-                "Views":int(s.get("viewCount",0)),"Videos":int(s.get("videoCount",0)),
-                "URL":url,"Fetched At":now})
+                        "Views":int(s.get("viewCount",0)),"Videos":int(s.get("videoCount",0)),
+                        "Channel ID":p["items"][0]["id"],"URL":url,"Fetched At":now})
         except Exception as e: errors.append((name,str(e)))
     return pd.DataFrame(out),errors
 
@@ -38,85 +44,124 @@ def fmt(x):
     x=int(x)
     return f"{x/1e6:.2f}M" if x>=1e6 else f"{x/1e3:.1f}K" if x>=1e3 else f"{x:,}"
 
-if "data" not in st.session_state: st.session_state.data=pd.DataFrame()
-if "history" not in st.session_state: st.session_state.history=pd.DataFrame(columns=["Channel","Subscribers","Fetched At"])
-if "last" not in st.session_state: st.session_state.last=0
+@st.cache_resource
+def get_ws():
+    if not GS_OK or "gcp_service_account" not in st.secrets or "GOOGLE_SHEET_ID" not in st.secrets:return None
+    info=dict(st.secrets["gcp_service_account"])
+    creds=Credentials.from_service_account_info(info,scopes=[
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"])
+    return gspread.authorize(creds).open_by_key(st.secrets["GOOGLE_SHEET_ID"]).sheet1
+
+def save_rows(ws,d):
+    if not ws.get_all_values():
+        ws.append_row(["Fetched At","Channel","Subscribers","Views","Videos","Channel ID"],value_input_option="USER_ENTERED")
+    ws.append_rows([[r["Fetched At"],r["Channel"],"" if pd.isna(r["Subscribers"]) else int(r["Subscribers"]),
+                     int(r["Views"]),int(r["Videos"]),r["Channel ID"]] for _,r in d.iterrows()],
+                   value_input_option="USER_ENTERED")
+
+@st.cache_data(ttl=60)
+def history():
+    ws=get_ws()
+    if ws is None:return pd.DataFrame()
+    v=ws.get_all_records()
+    if not v:return pd.DataFrame()
+    h=pd.DataFrame(v)
+    h["Fetched At"]=pd.to_datetime(h["Fetched At"],errors="coerce")
+    for c in ["Subscribers","Views","Videos"]:h[c]=pd.to_numeric(h[c],errors="coerce")
+    return h
 
 with st.sidebar:
     st.header("⚙️ Controls")
     try: secret=st.secrets.get("YOUTUBE_API_KEY","")
     except: secret=""
     api=secret or st.text_input("YouTube API Key",type="password")
-    if secret: st.success("API connected")
-    minutes=st.selectbox("Auto-refresh", [1,5,10,15,30,60], index=1)
+    st.success("YouTube API connected") if secret else None
+    interval=st.selectbox("Auto-refresh",[1,5,10,15,30,60],index=1)
     refresh=st.button("🔄 Refresh Now",use_container_width=True)
-    if st.button("🗑️ Clear Session History",use_container_width=True):
-        st.session_state.history=pd.DataFrame(columns=["Channel","Subscribers","Fetched At"])
-        st.session_state.last=0
-        st.rerun()
+    if get_ws() is not None: st.success("📚 Google Sheets connected")
+    else: st.warning("📚 Google Sheets not connected")
 
 channels=pd.read_csv("channels.csv")
-due=time.time()-st.session_state.last >= minutes*60
-if api and (refresh or st.session_state.data.empty or due):
+if "data" not in st.session_state:st.session_state.data=pd.DataFrame()
+if "last" not in st.session_state:st.session_state.last=0
+if "errors" not in st.session_state:st.session_state.errors=[]
+
+if api and (refresh or st.session_state.data.empty or time.time()-st.session_state.last>=interval*60):
     with st.spinner("Fetching YouTube statistics…"):
-        new,errors=fetch(api,list(channels[["Channel Name","YouTube URL"]].itertuples(index=False,name=None)))
-    if not new.empty:
-        st.session_state.data=new
-        st.session_state.history=pd.concat([st.session_state.history,new[["Channel","Subscribers","Fetched At"]]],ignore_index=True)
-        st.session_state.last=time.time()
-        st.session_state.errors=errors
+        d,e=fetch(api,list(channels[["Channel Name","YouTube URL"]].itertuples(index=False,name=None)))
+    if not d.empty:
+        st.session_state.data=d;st.session_state.last=time.time();st.session_state.errors=e
+        ws=get_ws()
+        if ws:
+            try: save_rows(ws,d); history.clear()
+            except Exception as ex: st.session_state.errors.append(("Google Sheets",str(ex)))
 
 data=st.session_state.data.copy()
 if data.empty:
-    st.info("Add your API key in the sidebar, then click Refresh Now.")
-    st.stop()
+    st.info("Connect the API and click Refresh Now.");st.stop()
 
-hist=st.session_state.history.copy()
-if len(hist)>1:
-    h=hist.copy(); h["Fetched At"]=pd.to_datetime(h["Fetched At"]); h=h.sort_values("Fetched At")
-    prev=h.groupby("Channel").nth(-2).reset_index()[["Channel","Subscribers"]].rename(columns={"Subscribers":"Previous"})
+h=history()
+if not h.empty:
+    prev=h.sort_values("Fetched At").groupby("Channel").nth(-2).reset_index()[["Channel","Subscribers"]].rename(columns={"Subscribers":"Previous"})
     data=data.merge(prev,on="Channel",how="left")
-else: data["Previous"]=pd.NA
+else:data["Previous"]=pd.NA
 data["Growth"]=data["Subscribers"]-pd.to_numeric(data["Previous"],errors="coerce")
 data["Growth %"]=data["Growth"]/data["Previous"]*100
 data["Rank"]=data["Subscribers"].rank(method="min",ascending=False).astype("Int64")
 
 c1,c2,c3,c4=st.columns(4)
-c1.metric("📺 Channels",len(data))
-c2.metric("👥 Total Subscribers",fmt(data["Subscribers"].sum()))
+c1.metric("📺 Channels",len(data));c2.metric("👥 Total Subscribers",fmt(data["Subscribers"].sum()))
 c3.metric("📈 Since Previous Fetch",f"{int(pd.to_numeric(data['Growth'],errors='coerce').fillna(0).sum()):+,}")
 c4.metric("🕐 Last Refresh",str(data["Fetched At"].iloc[0]).split()[1])
 
 a,b,c=st.columns([2,1,1])
-with a: search=st.text_input("🔎 Search channel")
-with b: sort=st.selectbox("Sort by",["Subscribers","Growth","Views","Videos","Rank"])
-with c: order=st.selectbox("Order",["High → Low","Low → High"])
-view=data[data["Channel"].str.contains(search,case=False,na=False)] if search else data.copy()
-view=view.sort_values(sort,ascending=(order=="Low → High"),na_position="last")
+with a:search=st.text_input("🔎 Search channel")
+with b:sort=st.selectbox("Sort by",["Subscribers","Growth","Views","Videos","Rank"])
+with c:order=st.selectbox("Order",["High → Low","Low → High"])
+view=data[data["Channel"].str.contains(search,case=False,na=False)].copy() if search else data.copy()
+view=view.sort_values(sort,ascending=order=="Low → High",na_position="last")
 
 st.subheader("🏆 Channel Ranking")
 show=view.copy()
 show["Subscribers"]=show["Subscribers"].apply(fmt)
 show["Growth"]=pd.to_numeric(show["Growth"],errors="coerce").apply(lambda x:"—" if pd.isna(x) else f"{int(x):+,}")
 show["Growth %"]=pd.to_numeric(show["Growth %"],errors="coerce").apply(lambda x:"—" if pd.isna(x) else f"{x:+.2f}%")
-show["Views"]=show["Views"].map(lambda x:f"{int(x):,}")
-show["Videos"]=show["Videos"].map(lambda x:f"{int(x):,}")
+show["Views"]=show["Views"].map(lambda x:f"{int(x):,}");show["Videos"]=show["Videos"].map(lambda x:f"{int(x):,}")
 st.dataframe(show[["Rank","Channel","Subscribers","Growth","Growth %","Views","Videos","Fetched At","URL"]],
-    use_container_width=True,hide_index=True,column_config={"URL":st.column_config.LinkColumn("YouTube")})
+use_container_width=True,hide_index=True,column_config={"URL":st.column_config.LinkColumn("YouTube")})
 
-st.subheader("📊 Subscriber Distribution")
-st.bar_chart(view[["Channel","Subscribers"]].dropna().set_index("Channel"))
+st.subheader("📅 Historical Growth")
+tabs=st.tabs(["7 Days","30 Days","90 Days"])
+for tab,days in zip(tabs,[7,30,90]):
+    with tab:
+        if h.empty:st.info("History will appear after Google Sheets is connected and snapshots are collected.")
+        else:
+            cutoff=datetime.now()-timedelta(days=days);x=h[h["Fetched At"]>=cutoff]
+            if x.empty:st.info("No history in this period yet.")
+            else:
+                first=x.sort_values("Fetched At").groupby("Channel").first().reset_index()
+                last=x.sort_values("Fetched At").groupby("Channel").last().reset_index()
+                g=first[["Channel","Subscribers"]].rename(columns={"Subscribers":"Start"}).merge(
+                    last[["Channel","Subscribers"]].rename(columns={"Subscribers":"Current"}),on="Channel")
+                g["Growth"]=g["Current"]-g["Start"];g=g.sort_values("Growth",ascending=False)
+                z=g.copy();z["Start"]=z["Start"].apply(fmt);z["Current"]=z["Current"].apply(fmt);z["Growth"]=z["Growth"].apply(lambda x:f"{int(x):+,}")
+                st.dataframe(z[["Channel","Start","Current","Growth"]],use_container_width=True,hide_index=True)
 
-if len(hist)>1:
-    st.subheader("📈 Session Growth")
-    h=hist.copy(); h["Fetched At"]=pd.to_datetime(h["Fetched At"])
-    pivot=h.pivot_table(index="Fetched At",columns="Channel",values="Subscribers",aggfunc="last").sort_index()
-    picks=st.multiselect("Channels to plot",list(pivot.columns),default=list(pivot.columns[:5]))
-    if picks: st.line_chart(pivot[picks])
+if not h.empty:
+    st.subheader("📈 Subscriber History")
+    picks=st.multiselect("Channels to plot",list(h["Channel"].unique()),default=list(h["Channel"].unique())[:5])
+    if picks:
+        p=h[h["Channel"].isin(picks)].pivot_table(index="Fetched At",columns="Channel",values="Subscribers",aggfunc="last").sort_index()
+        st.line_chart(p)
 
 st.subheader("📥 Export")
 st.download_button("Download Current Report CSV",data.to_csv(index=False).encode(),"youtube_current_report.csv","text/csv")
-st.download_button("Download Session History CSV",hist.to_csv(index=False).encode(),"youtube_session_history.csv","text/csv")
+if not h.empty:st.download_button("Download Full Historical CSV",data=h.to_csv(index=False).encode(),"youtube_historical_data.csv","text/csv")
 
-st.caption("YouTube rounds subscriberCount to three significant figures. History in this version lasts for the current app session.")
-st.markdown(f'<meta http-equiv="refresh" content="{minutes*60}">',unsafe_allow_html=True)
+if st.session_state.errors:
+    with st.expander(f"⚠️ {len(st.session_state.errors)} error(s)"):
+        for n,m in st.session_state.errors:st.write(f"**{n}:** {m}")
+
+st.caption("YouTube rounds subscriberCount to three significant figures. Historical analytics are stored in Google Sheets.")
+st.markdown(f'<meta http-equiv="refresh" content="{interval*60}">',unsafe_allow_html=True)
