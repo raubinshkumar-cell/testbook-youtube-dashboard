@@ -156,8 +156,8 @@ if not h.empty:
         st.line_chart(p)
 
 st.subheader("📥 Export")
-st.download_button("Download Current Report CSV",data.to_csv(index=False).encode(),"youtube_current_report.csv","text/csv")
-if not h.empty:st.download_button("Download Full Historical CSV",data=h.to_csv(index=False).encode(),"youtube_historical_data.csv","text/csv")
+st.download_button("Download Current Report CSV", data.to_csv(index=False).encode(), file_name="youtube_current_report.csv", mime="text/csv")
+if not h.empty:st.download_button("Download Full Historical CSV", data=h.to_csv(index=False).encode(), file_name="youtube_historical_data.csv", mime="text/csv")
 
 if st.session_state.errors:
     with st.expander(f"⚠️ {len(st.session_state.errors)} error(s)"):
