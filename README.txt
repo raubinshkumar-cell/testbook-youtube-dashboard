@@ -1,4 +1,5 @@
-Testbook YouTube Command Center V7
-Professional management dashboard for multi-channel YouTube monitoring.
-Includes 1D/7D/30D/90D growth, ranking, historical trends, channel deep dive,
-management snapshot, Google Sheets history, search/sort, and CSV reports.
+Testbook YouTube Command Center V9
+Clean, user-friendly management dashboard for 29 YouTube channels.
+Includes executive overview cards, compact KPI hierarchy, management/all-channel views,
+1D/7D/30D/90D growth, channel deep dive, historical trends, Google Sheets history,
+search/sort, and CSV reports.

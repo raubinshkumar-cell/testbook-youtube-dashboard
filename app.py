@@ -112,7 +112,7 @@ def history():
 # ---------- Professional UI ----------
 st.markdown("""
 <style>
-    .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 1500px;}
+    .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 1700px;}
     [data-testid="stSidebar"] {border-right: 1px solid #e5e7eb;}
     [data-testid="stMetric"] {
         background: #ffffff;
@@ -122,17 +122,24 @@ st.markdown("""
         box-shadow: 0 1px 2px rgba(0,0,0,.04);
     }
     [data-testid="stMetricLabel"] {font-size: .78rem;}
-    [data-testid="stMetricValue"] {font-size: 1.65rem;}
+    [data-testid="stMetricValue"] {font-size: 1.45rem; font-weight: 650;}
     .hero {
         padding: 6px 0 18px 0;
         border-bottom: 1px solid #e5e7eb;
         margin-bottom: 20px;
     }
-    .hero-title {font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; margin: 0;}
+    .hero-title {font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin: 0;}
     .hero-sub {color: #6b7280; margin-top: 5px; font-size: .9rem;}
-    .section-title {font-size: 1.25rem; font-weight: 650; margin: 20px 0 10px;}
+    .section-title {font-size: 1.12rem; font-weight: 650; margin: 20px 0 10px;}
     .small-note {color:#6b7280; font-size:.8rem;}
-    div[data-testid="stDataFrame"] {border: 1px solid #e5e7eb; border-radius: 10px;}
+    div[data-testid="stDataFrame"] {border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;}
+    div[data-testid="stTabs"] button {font-weight: 600; padding-top: 8px; padding-bottom: 8px;}
+    div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button {border-radius: 8px;}
+    .overview-card {padding: 14px 16px; border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; min-height: 115px;}
+    .overview-card-title {font-size: .82rem; font-weight: 650; margin-bottom: 8px;}
+    .overview-row {font-size: .84rem; padding: 4px 0; border-bottom: 1px solid #f1f5f9;}
+    .overview-row:last-child {border-bottom: 0;}
+    .muted {color:#6b7280; font-size:.78rem;}
     .status-ok {background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; padding:8px 10px; border-radius:8px; font-size:.82rem;}
 
     div[data-baseweb="select"] > div {border-radius: 9px;}
@@ -237,6 +244,8 @@ c3.metric("Since previous fetch", f"{total_growth:+,}")
 c4.metric("Last refresh", str(data["Fetched At"].iloc[0]).split()[1] if len(data) else "—")
 
 st.markdown('<div class="section-title">Channel performance</div>', unsafe_allow_html=True)
+view_mode=st.radio("View", ["Management", "All channels"], horizontal=True, label_visibility="collapsed")
+
 f1,f2,f3=st.columns([2,1,1])
 with f1:
     search=st.text_input("Search channel", placeholder="Type a channel name…", label_visibility="collapsed")
@@ -247,6 +256,8 @@ with f3:
 
 view=data[data["Channel"].str.contains(search,case=False,na=False)].copy() if search else data.copy()
 view=view.sort_values(sort,ascending=order=="Low → High",na_position="last")
+if view_mode == "Management" and not search:
+    view=view.head(10)
 
 show=view.copy()
 show["Subscribers"]=show["Subscribers"].apply(fmt)
