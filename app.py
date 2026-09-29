@@ -62,14 +62,51 @@ def save_rows(ws,d):
 
 @st.cache_data(ttl=60)
 def history():
-    ws=get_ws()
-    if ws is None:return pd.DataFrame()
-    v=ws.get_all_records()
-    if not v:return pd.DataFrame()
-    h=pd.DataFrame(v)
-    h["Fetched At"]=pd.to_datetime(h["Fetched At"],errors="coerce")
-    for c in ["Subscribers","Views","Videos"]:h[c]=pd.to_numeric(h[c],errors="coerce")
-    return h
+    empty = pd.DataFrame(columns=[
+        "Fetched At", "Channel", "Subscribers", "Views", "Videos", "Channel ID"
+    ])
+    ws = get_ws()
+    if ws is None:
+        return empty
+    try:
+        values = ws.get_all_values()
+        if not values:
+            return empty
+
+        # Find the expected header row. This avoids KeyError if the sheet has
+        # a blank row or any pre-existing content above the dashboard data.
+        expected = {"Fetched At", "Channel", "Subscribers", "Views", "Videos", "Channel ID"}
+        header_row = None
+        for i, row in enumerate(values[:10]):
+            if expected.issubset(set(str(x).strip() for x in row)):
+                header_row = i
+                break
+
+        if header_row is None:
+            return empty
+
+        headers = [str(x).strip() for x in values[header_row]]
+        rows = values[header_row + 1:]
+        if not rows:
+            return empty
+
+        # Normalize row widths to header width.
+        normalized = [r[:len(headers)] + [""] * max(0, len(headers)-len(r)) for r in rows]
+        h = pd.DataFrame(normalized, columns=headers)
+
+        for col in ["Fetched At", "Channel", "Subscribers", "Views", "Videos", "Channel ID"]:
+            if col not in h.columns:
+                return empty
+
+        h["Fetched At"] = pd.to_datetime(h["Fetched At"], errors="coerce")
+        for col in ["Subscribers", "Views", "Videos"]:
+            h[col] = pd.to_numeric(h[col], errors="coerce")
+
+        h = h.dropna(subset=["Fetched At", "Channel"]).copy()
+        return h
+    except Exception:
+        # A history database problem should never take down the YouTube dashboard.
+        return empty
 
 with st.sidebar:
     st.header("⚙️ Controls")
@@ -79,8 +116,14 @@ with st.sidebar:
     st.success("YouTube API connected") if secret else None
     interval=st.selectbox("Auto-refresh",[1,5,10,15,30,60],index=1)
     refresh=st.button("🔄 Refresh Now",use_container_width=True)
-    if get_ws() is not None: st.success("📚 Google Sheets connected")
-    else: st.warning("📚 Google Sheets not connected")
+    try:
+        ws_status = get_ws()
+        if ws_status is not None:
+            st.success("📚 Google Sheets connected")
+        else:
+            st.warning("📚 Google Sheets not connected")
+    except Exception:
+        st.warning("📚 Google Sheets needs attention")
 
 channels=pd.read_csv("channels.csv")
 if "data" not in st.session_state:st.session_state.data=pd.DataFrame()
@@ -92,10 +135,13 @@ if api and (refresh or st.session_state.data.empty or time.time()-st.session_sta
         d,e=fetch(api,list(channels[["Channel Name","YouTube URL"]].itertuples(index=False,name=None)))
     if not d.empty:
         st.session_state.data=d;st.session_state.last=time.time();st.session_state.errors=e
-        ws=get_ws()
-        if ws:
-            try: save_rows(ws,d); history.clear()
-            except Exception as ex: st.session_state.errors.append(("Google Sheets",str(ex)))
+        try:
+            ws=get_ws()
+            if ws:
+                save_rows(ws,d)
+                history.clear()
+        except Exception as ex:
+            st.session_state.errors.append(("Google Sheets",str(ex)))
 
 data=st.session_state.data.copy()
 if data.empty:
